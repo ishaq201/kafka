@@ -16,24 +16,9 @@
  */
 package org.apache.kafka.snapshot;
 
-import java.nio.file.Path;
 import org.apache.kafka.raft.OffsetAndEpoch;
 
-public final class SnapshotPath {
-    public final Path path;
-    public final OffsetAndEpoch snapshotId;
-    public final boolean partial;
-    public final boolean deleted;
+import java.nio.file.Path;
 
-    public SnapshotPath(Path path, OffsetAndEpoch snapshotId, boolean partial, boolean deleted) {
-        this.path = path;
-        this.snapshotId = snapshotId;
-        this.partial = partial;
-        this.deleted = deleted;
-    }
 
-    @Override
-    public String toString() {
-        return String.format("SnapshotPath(path=%s, snapshotId=%s, partial=%s)", path, snapshotId, partial);
-    }
-}
+public record SnapshotPath(Path path, OffsetAndEpoch snapshotId, boolean partial, boolean deleted) { }

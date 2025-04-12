@@ -17,16 +17,10 @@
 
 package org.apache.kafka.connect.rest.basic.auth.extension;
 
-import javax.security.auth.callback.Callback;
-import javax.security.auth.callback.CallbackHandler;
-import javax.security.auth.callback.ChoiceCallback;
-import javax.ws.rs.HttpMethod;
-import javax.ws.rs.core.SecurityContext;
-import javax.ws.rs.core.UriInfo;
-
 import org.apache.kafka.common.security.authenticator.TestJaasConfig;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.test.TestUtils;
+
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -42,11 +36,19 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-import javax.ws.rs.container.ContainerRequestContext;
-import javax.ws.rs.core.Response;
+import javax.security.auth.callback.Callback;
+import javax.security.auth.callback.CallbackHandler;
+import javax.security.auth.callback.ChoiceCallback;
+
+import jakarta.ws.rs.HttpMethod;
+import jakarta.ws.rs.container.ContainerRequestContext;
+import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.SecurityContext;
+import jakarta.ws.rs.core.UriInfo;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
@@ -130,7 +132,7 @@ public class JaasBasicAuthFilterTest {
     }
 
     @Test
-    public void testUnknownCredentialsFile() throws IOException {
+    public void testUnknownCredentialsFile() {
         JaasBasicAuthFilter jaasBasicAuthFilter = setupJaasFilter("KafkaConnect", "/tmp/testcrednetial");
         ContainerRequestContext requestContext = setMock("Basic", "user", "password");
         jaasBasicAuthFilter.filter(requestContext);
@@ -141,7 +143,7 @@ public class JaasBasicAuthFilterTest {
     }
 
     @Test
-    public void testNoFileOption() throws IOException {
+    public void testNoFileOption() {
         JaasBasicAuthFilter jaasBasicAuthFilter = setupJaasFilter("KafkaConnect", null);
         ContainerRequestContext requestContext = setMock("Basic", "user", "password");
         jaasBasicAuthFilter.filter(requestContext);
@@ -230,7 +232,7 @@ public class JaasBasicAuthFilterTest {
         ArgumentCaptor<SecurityContext> capturedContext = ArgumentCaptor.forClass(SecurityContext.class);
         verify(requestContext).setSecurityContext(capturedContext.capture());
         assertEquals("user1", capturedContext.getValue().getUserPrincipal().getName());
-        assertEquals(true, capturedContext.getValue().isSecure());
+        assertTrue(capturedContext.getValue().isSecure());
     }
 
     private String authHeader(String authorization, String username, String password) {

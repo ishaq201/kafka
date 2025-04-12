@@ -17,9 +17,9 @@
 package org.apache.kafka.common.record;
 
 import org.apache.kafka.common.utils.AbstractIterator;
-import org.apache.kafka.common.utils.Time;
 
 import java.util.Iterator;
+import java.util.Optional;
 
 
 /**
@@ -58,7 +58,7 @@ public interface Records extends TransferableRecords {
      * Get the record batches. Note that the signature allows subclasses
      * to return a more specific batch type. This enables optimizations such as in-place offset
      * assignment (see for example {@link DefaultRecordBatch}), and partial reading of
-     * record data (see {@link FileLogInputStream.FileChannelRecordBatch#magic()}.
+     * record data, see {@link FileLogInputStream.FileChannelRecordBatch#magic()}.
      * @return An iterator over the record batches of the log
      */
     Iterable<? extends RecordBatch> batches();
@@ -71,22 +71,18 @@ public interface Records extends TransferableRecords {
     AbstractIterator<? extends RecordBatch> batchIterator();
 
     /**
+     * Return the last record batch if non-empty or an empty `Optional` otherwise.
+     *
+     * Note that this requires iterating over all the record batches and hence it's expensive.
+     */
+    Optional<RecordBatch> lastBatch();
+
+    /**
      * Check whether all batches in this buffer have a certain magic value.
      * @param magic The magic value to check
      * @return true if all record batches have a matching magic value, false otherwise
      */
     boolean hasMatchingMagic(byte magic);
-
-    /**
-     * Convert all batches in this buffer to the format passed as a parameter. Note that this requires
-     * deep iteration since all of the deep records must also be converted to the desired format.
-     * @param toMagic The magic value to convert to
-     * @param firstOffset The starting offset for returned records. This only impacts some cases. See
-     *                    {@link RecordsUtil#downConvert(Iterable, byte, long, Time)} for an explanation.
-     * @param time instance used for reporting stats
-     * @return A ConvertedRecords instance which may or may not contain the same instance in its records field.
-     */
-    ConvertedRecords<? extends Records> downConvert(byte toMagic, long firstOffset, Time time);
 
     /**
      * Get an iterator over the records in this log. Note that this generally requires decompression,

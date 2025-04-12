@@ -21,7 +21,6 @@ import org.slf4j.Logger;
 
 import java.util.OptionalLong;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 
@@ -98,7 +97,7 @@ public interface EventQueue extends AutoCloseable {
 
         @Override
         public OptionalLong apply(OptionalLong prevDeadlineNs) {
-            if (!prevDeadlineNs.isPresent()) {
+            if (prevDeadlineNs.isEmpty()) {
                 return OptionalLong.of(newDeadlineNs);
             } else if (prevDeadlineNs.getAsLong() < newDeadlineNs) {
                 return prevDeadlineNs;
@@ -108,8 +107,27 @@ public interface EventQueue extends AutoCloseable {
         }
     }
 
+    class LatestDeadlineFunction implements Function<OptionalLong, OptionalLong> {
+        private final long newDeadlineNs;
+
+        public LatestDeadlineFunction(long newDeadlineNs) {
+            this.newDeadlineNs = newDeadlineNs;
+        }
+
+        @Override
+        public OptionalLong apply(OptionalLong prevDeadlineNs) {
+            if (prevDeadlineNs.isEmpty()) {
+                return OptionalLong.of(newDeadlineNs);
+            } else if (prevDeadlineNs.getAsLong() > newDeadlineNs) {
+                return prevDeadlineNs;
+            } else {
+                return OptionalLong.of(newDeadlineNs);
+            }
+        }
+    }
+
     class VoidEvent implements Event {
-        public final static VoidEvent INSTANCE = new VoidEvent();
+        public static final VoidEvent INSTANCE = new VoidEvent();
 
         @Override
         public void run() throws Exception {
@@ -210,43 +228,14 @@ public interface EventQueue extends AutoCloseable {
                  Event event);
 
     /**
-     * Asynchronously shut down the event queue with no unnecessary delay.
-     * @see #beginShutdown(String, Event, long, TimeUnit)
-     *
-     * @param source                The source of the shutdown.
-     */
-    default void beginShutdown(String source) {
-        beginShutdown(source, new VoidEvent());
-    }
-
-    /**
-     * Asynchronously shut down the event queue with no unnecessary delay.
-     *
-     * @param source        The source of the shutdown.
-     * @param cleanupEvent  The mandatory event to invoke after all other events have
-     *                      been processed.
-     * @see #beginShutdown(String, Event, long, TimeUnit)
-     */
-    default void beginShutdown(String source, Event cleanupEvent) {
-        beginShutdown(source, cleanupEvent, 0, TimeUnit.SECONDS);
-    }
-
-    /**
      * Asynchronously shut down the event queue.
-     *
-     * No new events will be accepted, and the timeout will be initiated
-     * for all existing events.
+     * <br>
+     * No new events will be accepted, and the queue thread will exit after running the existing events.
+     * Deferred events will receive TimeoutExceptions.
      *
      * @param source        The source of the shutdown.
-     * @param cleanupEvent  The mandatory event to invoke after all other events have
-     *                      been processed.
-     * @param timeSpan      The amount of time to use for the timeout.
-     *                      Once the timeout elapses, any remaining queued
-     *                      events will get a
-     *                      {@link org.apache.kafka.common.errors.TimeoutException}.
-     * @param timeUnit      The time unit to use for the timeout.
      */
-    void beginShutdown(String source, Event cleanupEvent, long timeSpan, TimeUnit timeUnit);
+    void beginShutdown(String source);
 
     /**
      * @return The number of pending and running events. If this is 0, there is no running event and

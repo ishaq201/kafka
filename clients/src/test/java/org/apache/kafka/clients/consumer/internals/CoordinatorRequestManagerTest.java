@@ -17,186 +17,286 @@
 package org.apache.kafka.clients.consumer.internals;
 
 import org.apache.kafka.clients.ClientResponse;
-import org.apache.kafka.clients.MockClient;
-import org.apache.kafka.clients.consumer.OffsetResetStrategy;
+import org.apache.kafka.clients.consumer.internals.events.BackgroundEventHandler;
 import org.apache.kafka.common.Node;
-import org.apache.kafka.common.internals.ClusterResourceListeners;
+import org.apache.kafka.common.errors.TimeoutException;
+import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.requests.AbstractRequest;
+import org.apache.kafka.common.requests.FindCoordinatorRequest;
 import org.apache.kafka.common.requests.FindCoordinatorResponse;
-import org.apache.kafka.common.requests.RequestTestUtils;
-import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.requests.RequestHeader;
+import org.apache.kafka.common.test.api.Flaky;
+import org.apache.kafka.common.utils.LogCaptureAppender;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
+
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.Collections;
-import java.util.Properties;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
-import static org.apache.kafka.clients.consumer.ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG;
-import static org.apache.kafka.clients.consumer.ConsumerConfig.RETRY_BACKOFF_MS_CONFIG;
-import static org.apache.kafka.clients.consumer.ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 public class CoordinatorRequestManagerTest {
+    private static final int RETRY_BACKOFF_MS = 500;
+    private static final String GROUP_ID = "group-1";
     private MockTime time;
-    private MockClient client;
-    private SubscriptionState subscriptions;
-    private ConsumerMetadata metadata;
-    private LogContext logContext;
-    private ErrorEventHandler errorEventHandler;
+    private BackgroundEventHandler backgroundEventHandler;
     private Node node;
-    private final Properties properties = new Properties();
-    private String groupId;
-    private int requestTimeoutMs;
-    private RequestState coordinatorRequestState;
 
     @BeforeEach
     public void setup() {
-        this.logContext = new LogContext();
         this.time = new MockTime(0);
-        this.subscriptions = new SubscriptionState(logContext, OffsetResetStrategy.EARLIEST);
-        this.metadata = new ConsumerMetadata(0, Long.MAX_VALUE, false,
-                false, subscriptions, logContext, new ClusterResourceListeners());
-        this.client = new MockClient(time, metadata);
-        this.client.updateMetadata(RequestTestUtils.metadataUpdateWith(1, Collections.singletonMap("topic", 1)));
-        this.node = metadata.fetch().nodes().get(0);
-        this.errorEventHandler = mock(ErrorEventHandler.class);
-        properties.put(RETRY_BACKOFF_MS_CONFIG, "100");
-        this.groupId = "group-1";
-        this.requestTimeoutMs = 500;
-        this.coordinatorRequestState = mock(RequestState.class);
-        properties.put(KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        properties.put(VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        properties.put(RETRY_BACKOFF_MS_CONFIG, 100);
-    }
-    
-    @Test
-    public void testPoll() {
-        CoordinatorRequestManager coordinatorManager = setupCoordinatorManager();
-        when(coordinatorRequestState.canSendRequest(time.milliseconds())).thenReturn(true);
-        NetworkClientDelegate.PollResult res = coordinatorManager.poll(time.milliseconds());
-        assertEquals(1, res.unsentRequests.size());
-
-        when(coordinatorRequestState.canSendRequest(time.milliseconds())).thenReturn(false);
-        NetworkClientDelegate.PollResult res2 = coordinatorManager.poll(time.milliseconds());
-        assertTrue(res2.unsentRequests.isEmpty());
+        this.node = new Node(1, "localhost", 9092);
+        this.backgroundEventHandler = mock(BackgroundEventHandler.class);
     }
 
     @Test
-    public void testOnResponse() {
-        CoordinatorRequestManager coordinatorManager = setupCoordinatorManager();
-        FindCoordinatorResponse resp = FindCoordinatorResponse.prepareResponse(Errors.NONE, groupId, node);
-        coordinatorManager.onResponse(time.milliseconds(), resp, null);
-        verify(errorEventHandler, never()).handle(any());
-        assertNotNull(coordinatorManager.coordinator());
+    public void testSuccessfulResponse() {
+        CoordinatorRequestManager coordinatorManager = setupCoordinatorManager(GROUP_ID);
+        expectFindCoordinatorRequest(coordinatorManager, Errors.NONE);
 
-        FindCoordinatorResponse retriableErrorResp =
-                FindCoordinatorResponse.prepareResponse(Errors.COORDINATOR_NOT_AVAILABLE,
-                groupId, node);
-        coordinatorManager.onResponse(time.milliseconds(), retriableErrorResp, null);
-        verify(errorEventHandler, never()).handle(Errors.COORDINATOR_NOT_AVAILABLE.exception());
-        assertFalse(coordinatorManager.coordinator().isPresent());
-
-        coordinatorManager.onResponse(
-                time.milliseconds(), null,
-                new RuntimeException("some error"));
-        assertFalse(coordinatorManager.coordinator().isPresent());
-    }
-
-    @Test
-    public void testFindCoordinatorBackoff() {
-        this.coordinatorRequestState = new RequestState(
-                100,
-                2,
-                1000,
-                0);
-        CoordinatorRequestManager coordinatorManager = setupCoordinatorManager();
-
-        NetworkClientDelegate.PollResult res = coordinatorManager.poll(time.milliseconds());
-        assertEquals(1, res.unsentRequests.size());
-        coordinatorManager.onResponse(
-                time.milliseconds(), FindCoordinatorResponse.prepareResponse(Errors.CLUSTER_AUTHORIZATION_FAILED, "key",
-                this.node), null);
-        // Need to wait for 100ms until the next send
-        res = coordinatorManager.poll(time.milliseconds());
-        assertTrue(res.unsentRequests.isEmpty());
-        this.time.sleep(50);
-        res = coordinatorManager.poll(time.milliseconds());
-        assertTrue(res.unsentRequests.isEmpty());
-        this.time.sleep(50);
-        // should be able to send after 100ms
-        res = coordinatorManager.poll(time.milliseconds());
-        assertEquals(1, res.unsentRequests.size());
-        coordinatorManager.onResponse(
-                time.milliseconds(), FindCoordinatorResponse.prepareResponse(Errors.NONE, "key",
-                        this.node), null);
-    }
-
-    @Test
-    public void testPollWithExistingCoordinator() {
-        CoordinatorRequestManager coordinatorManager = setupCoordinatorManager();
-        FindCoordinatorResponse resp = FindCoordinatorResponse.prepareResponse(Errors.NONE, groupId, node);
-        coordinatorManager.onResponse(time.milliseconds(), resp, null);
-        verify(errorEventHandler, never()).handle(any());
-        assertNotNull(coordinatorManager.coordinator());
+        Optional<Node> coordinatorOpt = coordinatorManager.coordinator();
+        assertTrue(coordinatorOpt.isPresent());
+        assertEquals(Integer.MAX_VALUE - node.id(), coordinatorOpt.get().id());
+        assertEquals(node.host(), coordinatorOpt.get().host());
+        assertEquals(node.port(), coordinatorOpt.get().port());
 
         NetworkClientDelegate.PollResult pollResult = coordinatorManager.poll(time.milliseconds());
-        assertEquals(Long.MAX_VALUE, pollResult.timeUntilNextPollMs);
-        assertTrue(pollResult.unsentRequests.isEmpty());
+        assertEquals(Collections.emptyList(), pollResult.unsentRequests);
+    }
+
+    /**
+     * This test mimics a client that has been disconnected from the coordinator. When the client remains disconnected
+     * from the coordinator for 60 seconds, the client will begin to emit a warning log every minute thereafter to
+     * alert the user about the ongoing disconnect status. The warning log includes the length of time of the ongoing
+     * disconnect:
+     *
+     * <code>
+     *     Consumer has been disconnected from the group coordinator for XXXXXms
+     * </code>
+     *
+     * <p/>
+     *
+     * However, the logic used to calculate the length of the disconnect was not correct. This test exercises the
+     * disconnect logic, controlling the logging and system time, to ensure the warning message is correct.
+     *
+     * @see CoordinatorRequestManager#markCoordinatorUnknown(String, long)
+     */
+    @Flaky("KAFKA-18776")
+    @Test
+    public void testMarkCoordinatorUnknownLoggingAccuracy() {
+        long oneMinute = 60000;
+
+        try (final LogCaptureAppender appender = LogCaptureAppender.createAndRegister()) {
+            appender.setClassLogger(CoordinatorRequestManager.class, Level.WARN);
+            CoordinatorRequestManager coordinatorRequestManager = setupCoordinatorManager(GROUP_ID);
+            assertFalse(coordinatorRequestManager.coordinator().isPresent());
+
+            // Step 1: mark the coordinator as disconnected right after creation of the CoordinatorRequestManager.
+            // Because the disconnect occurred immediately, no warning should be logged.
+            coordinatorRequestManager.markCoordinatorUnknown("test", time.milliseconds());
+            assertTrue(millisecondsFromLog(appender).isEmpty());
+
+            // Step 2: sleep for one minute and mark the coordinator unknown again. Then verify that the warning was
+            // logged and the reported time is accurate.
+            time.sleep(oneMinute);
+            coordinatorRequestManager.markCoordinatorUnknown("test", time.milliseconds());
+            Optional<Long> firstLogMs = millisecondsFromLog(appender);
+            assertTrue(firstLogMs.isPresent());
+            assertEquals(oneMinute, firstLogMs.get());
+
+            // Step 3: sleep for *another* minute, mark the coordinator unknown again, and verify the accuracy.
+            time.sleep(oneMinute);
+            coordinatorRequestManager.markCoordinatorUnknown("test", time.milliseconds());
+            Optional<Long> secondLogMs = millisecondsFromLog(appender);
+            assertTrue(secondLogMs.isPresent());
+            assertEquals(oneMinute * 2, secondLogMs.get());
+        }
+    }
+
+    private Optional<Long> millisecondsFromLog(LogCaptureAppender appender) {
+        Pattern pattern = Pattern.compile("^Consumer has been disconnected from the group coordinator for (?<millis>\\d+)+ms$");
+        List<Long> milliseconds = appender.getMessages().stream()
+            .map(pattern::matcher)
+            .filter(Matcher::find)
+            .map(matcher -> matcher.group("millis"))
+            .filter(Objects::nonNull)
+            .map(millisString -> {
+                try {
+                    return Long.parseLong(millisString);
+                } catch (NumberFormatException e) {
+                    return null;
+                }
+            })
+            .filter(Objects::nonNull)
+            .collect(Collectors.toList());
+
+        // Return the most recent log entry that matches the message in markCoordinatorUnknown, if present.
+        return milliseconds.isEmpty() ? Optional.empty() : Optional.of(milliseconds.get(milliseconds.size() - 1));
     }
 
     @Test
-    public void testRequestFutureCompletionHandler() {
-        NetworkClientDelegate.AbstractRequestFutureCompletionHandler h = new MockRequestFutureCompletionHandlerBase();
-        try {
-            h.onFailure(new RuntimeException());
-        } catch (Exception e) {
-            assertEquals("MockRequestFutureCompletionHandlerBase should throw an exception", e.getMessage());
-        }
+    public void testMarkCoordinatorUnknown() {
+        CoordinatorRequestManager coordinatorManager = setupCoordinatorManager(GROUP_ID);
+
+        expectFindCoordinatorRequest(coordinatorManager, Errors.NONE);
+        assertTrue(coordinatorManager.coordinator().isPresent());
+
+        // It may take time for metadata to converge between after a coordinator has
+        // been demoted. This can cause a tight loop in which FindCoordinator continues to
+        // return node X while that node continues to reply with NOT_COORDINATOR. Hence we
+        // still want to ensure a backoff after successfully finding the coordinator.
+        coordinatorManager.markCoordinatorUnknown("coordinator changed", time.milliseconds());
+        assertEquals(Collections.emptyList(), coordinatorManager.poll(time.milliseconds()).unsentRequests);
+
+        time.sleep(RETRY_BACKOFF_MS - 1);
+        assertEquals(Collections.emptyList(), coordinatorManager.poll(time.milliseconds()).unsentRequests);
+
+        time.sleep(RETRY_BACKOFF_MS);
+        expectFindCoordinatorRequest(coordinatorManager, Errors.NONE);
+        assertTrue(coordinatorManager.coordinator().isPresent());
+    }
+
+    @Test
+    public void testBackoffAfterRetriableFailure() {
+        CoordinatorRequestManager coordinatorManager = setupCoordinatorManager(GROUP_ID);
+        expectFindCoordinatorRequest(coordinatorManager, Errors.COORDINATOR_LOAD_IN_PROGRESS);
+        verifyNoInteractions(backgroundEventHandler);
+
+        time.sleep(RETRY_BACKOFF_MS - 1);
+        assertEquals(Collections.emptyList(), coordinatorManager.poll(time.milliseconds()).unsentRequests);
+
+        time.sleep(1);
+        expectFindCoordinatorRequest(coordinatorManager, Errors.NONE);
+    }
+
+    @Test
+    public void testBackoffAfterFatalError() {
+        CoordinatorRequestManager coordinatorManager = setupCoordinatorManager(GROUP_ID);
+        expectFindCoordinatorRequest(coordinatorManager, Errors.GROUP_AUTHORIZATION_FAILED);
+
+        time.sleep(RETRY_BACKOFF_MS - 1);
+        assertEquals(Collections.emptyList(), coordinatorManager.poll(time.milliseconds()).unsentRequests);
+
+        time.sleep(1);
+        assertEquals(1, coordinatorManager.poll(time.milliseconds()).unsentRequests.size());
+        assertEquals(Optional.empty(), coordinatorManager.coordinator());
     }
 
     @Test
     public void testNullGroupIdShouldThrow() {
-        this.groupId = null;
-        assertThrows(RuntimeException.class, this::setupCoordinatorManager);
-    }
-
-    private static class MockRequestFutureCompletionHandlerBase extends NetworkClientDelegate.AbstractRequestFutureCompletionHandler {
-        @Override
-        public void handleResponse(ClientResponse r, Exception t) {
-            throw new RuntimeException("MockRequestFutureCompletionHandlerBase should throw an exception");
-        }
+        assertThrows(RuntimeException.class, () -> setupCoordinatorManager(null));
     }
 
     @Test
     public void testFindCoordinatorResponseVersions() {
         // v4
-        FindCoordinatorResponse respNew = FindCoordinatorResponse.prepareResponse(Errors.NONE, groupId, this.node);
-        assertTrue(respNew.coordinatorByKey(groupId).isPresent());
-        assertEquals(groupId, respNew.coordinatorByKey(groupId).get().key());
-        assertEquals(this.node.id(), respNew.coordinatorByKey(groupId).get().nodeId());
+        FindCoordinatorResponse respNew = FindCoordinatorResponse.prepareResponse(Errors.NONE, GROUP_ID, this.node);
+        assertTrue(respNew.coordinatorByKey(GROUP_ID).isPresent());
+        assertEquals(GROUP_ID, respNew.coordinatorByKey(GROUP_ID).get().key());
+        assertEquals(this.node.id(), respNew.coordinatorByKey(GROUP_ID).get().nodeId());
 
         // <= v3
         FindCoordinatorResponse respOld = FindCoordinatorResponse.prepareOldResponse(Errors.NONE, this.node);
-        assertTrue(respOld.coordinatorByKey(groupId).isPresent());
-        assertEquals(this.node.id(), respNew.coordinatorByKey(groupId).get().nodeId());
+        assertTrue(respOld.coordinatorByKey(GROUP_ID).isPresent());
+        assertEquals(this.node.id(), respNew.coordinatorByKey(GROUP_ID).get().nodeId());
     }
 
-    private CoordinatorRequestManager setupCoordinatorManager() {
+    @Test
+    public void testNetworkTimeout() {
+        CoordinatorRequestManager coordinatorManager = setupCoordinatorManager(GROUP_ID);
+        NetworkClientDelegate.PollResult res = coordinatorManager.poll(time.milliseconds());
+        assertEquals(1, res.unsentRequests.size());
+
+        // Mimic a network timeout
+        res.unsentRequests.get(0).handler().onFailure(time.milliseconds(), new TimeoutException());
+
+        // Sleep for exponential backoff - 1ms
+        time.sleep(RETRY_BACKOFF_MS - 1);
+        NetworkClientDelegate.PollResult res2 = coordinatorManager.poll(this.time.milliseconds());
+        assertEquals(0, res2.unsentRequests.size());
+
+        time.sleep(1);
+        res2 = coordinatorManager.poll(time.milliseconds());
+        assertEquals(1, res2.unsentRequests.size());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = Errors.class, names = {"NONE", "COORDINATOR_NOT_AVAILABLE"})
+    public void testClearFatalErrorWhenReceivingSuccessfulResponse(Errors error) {
+        CoordinatorRequestManager coordinatorManager = setupCoordinatorManager(GROUP_ID);
+        expectFindCoordinatorRequest(coordinatorManager, Errors.GROUP_AUTHORIZATION_FAILED);
+        assertTrue(coordinatorManager.fatalError().isPresent());
+
+        time.sleep(RETRY_BACKOFF_MS);
+        // there are no successful responses, so the fatal error should persist
+        assertTrue(coordinatorManager.fatalError().isPresent());
+
+        // receiving a successful response should clear the fatal error
+        expectFindCoordinatorRequest(coordinatorManager, error);
+        assertTrue(coordinatorManager.fatalError().isEmpty());
+    }
+
+    private void expectFindCoordinatorRequest(
+        CoordinatorRequestManager  coordinatorManager,
+        Errors error
+    ) {
+        NetworkClientDelegate.PollResult res = coordinatorManager.poll(time.milliseconds());
+        assertEquals(1, res.unsentRequests.size());
+
+        NetworkClientDelegate.UnsentRequest unsentRequest = res.unsentRequests.get(0);
+        unsentRequest.handler().onComplete(buildResponse(unsentRequest, error));
+
+        boolean expectCoordinatorFound = error == Errors.NONE;
+        assertEquals(expectCoordinatorFound, coordinatorManager.coordinator().isPresent());
+    }
+
+    private CoordinatorRequestManager setupCoordinatorManager(String groupId) {
         return new CoordinatorRequestManager(
-                this.logContext,
-                this.errorEventHandler,
-                this.groupId,
-                this.coordinatorRequestState);
+            new LogContext(),
+            RETRY_BACKOFF_MS,
+            RETRY_BACKOFF_MS,
+            groupId
+        );
+    }
+
+    private ClientResponse buildResponse(
+        NetworkClientDelegate.UnsentRequest request,
+        Errors error
+    ) {
+        AbstractRequest abstractRequest = request.requestBuilder().build();
+        assertInstanceOf(FindCoordinatorRequest.class, abstractRequest);
+        FindCoordinatorRequest findCoordinatorRequest = (FindCoordinatorRequest) abstractRequest;
+
+        FindCoordinatorResponse findCoordinatorResponse =
+            FindCoordinatorResponse.prepareResponse(error, GROUP_ID, node);
+        return new ClientResponse(
+            new RequestHeader(ApiKeys.FIND_COORDINATOR, findCoordinatorRequest.version(), "", 1),
+            request.handler(),
+            node.idString(),
+            time.milliseconds(),
+            time.milliseconds(),
+            false,
+            null,
+            null,
+            findCoordinatorResponse
+        );
     }
 }

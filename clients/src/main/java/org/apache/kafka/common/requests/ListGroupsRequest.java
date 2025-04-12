@@ -20,10 +20,9 @@ import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.ListGroupsRequestData;
 import org.apache.kafka.common.message.ListGroupsResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
 import java.util.Collections;
 
 /**
@@ -49,6 +48,10 @@ public class ListGroupsRequest extends AbstractRequest {
             if (!data.statesFilter().isEmpty() && version < 4) {
                 throw new UnsupportedVersionException("The broker only supports ListGroups " +
                         "v" + version + ", but we need v4 or newer to request groups by states.");
+            }
+            if (!data.typesFilter().isEmpty() && version < 5) {
+                throw new UnsupportedVersionException("The broker only supports ListGroups " +
+                    "v" + version + ", but we need v5 or newer to request groups by type.");
             }
             return new ListGroupsRequest(data, version);
         }
@@ -77,8 +80,8 @@ public class ListGroupsRequest extends AbstractRequest {
         return new ListGroupsResponse(listGroupsResponseData);
     }
 
-    public static ListGroupsRequest parse(ByteBuffer buffer, short version) {
-        return new ListGroupsRequest(new ListGroupsRequestData(new ByteBufferAccessor(buffer), version), version);
+    public static ListGroupsRequest parse(Readable readable, short version) {
+        return new ListGroupsRequest(new ListGroupsRequestData(readable, version), version);
     }
 
     @Override

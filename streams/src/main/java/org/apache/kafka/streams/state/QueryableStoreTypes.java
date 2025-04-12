@@ -49,7 +49,7 @@ public final class QueryableStoreTypes {
     }
 
     /**
-     * A {@link QueryableStoreType} that accepts {@link ReadOnlyKeyValueStore ReadOnlyKeyValueStore<K, ValueAndTimestamp<V>>}.
+     * A {@link QueryableStoreType} that accepts {@link ReadOnlyKeyValueStore ReadOnlyKeyValueStore&lt;K, ValueAndTimestamp&lt;V&gt;&gt;}.
      *
      * @param <K> key type of the store
      * @param <V> value type of the store
@@ -71,7 +71,7 @@ public final class QueryableStoreTypes {
     }
 
     /**
-     * A {@link QueryableStoreType} that accepts {@link ReadOnlyWindowStore ReadOnlyWindowStore<K, ValueAndTimestamp<V>>}.
+     * A {@link QueryableStoreType} that accepts {@link ReadOnlyWindowStore ReadOnlyWindowStore&lt;K, ValueAndTimestamp&lt;V&gt;&gt;}.
      *
      * @param <K> key type of the store
      * @param <V> value type of the store
@@ -92,18 +92,17 @@ public final class QueryableStoreTypes {
         return new SessionStoreType<>();
     }
 
-    private static abstract class QueryableStoreTypeMatcher<T> implements QueryableStoreType<T> {
+    private abstract static class QueryableStoreTypeMatcher<T> implements QueryableStoreType<T> {
 
-        private final Set<Class> matchTo;
+        private final Set<Class<?>> matchTo;
 
-        QueryableStoreTypeMatcher(final Set<Class> matchTo) {
+        QueryableStoreTypeMatcher(final Set<Class<?>> matchTo) {
             this.matchTo = matchTo;
         }
 
-        @SuppressWarnings("unchecked")
         @Override
         public boolean accepts(final StateStore stateStore) {
-            for (final Class matchToClass : matchTo) {
+            for (final Class<?> matchToClass : matchTo) {
                 if (!matchToClass.isAssignableFrom(stateStore.getClass())) {
                     return false;
                 }

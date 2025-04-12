@@ -18,6 +18,7 @@
 package org.apache.kafka.image;
 
 import org.apache.kafka.raft.OffsetAndEpoch;
+import org.apache.kafka.snapshot.Snapshots;
 
 import java.util.Objects;
 
@@ -26,32 +27,35 @@ import java.util.Objects;
  * Information about the source of a metadata image.
  */
 public final class MetadataProvenance {
-    public static final MetadataProvenance EMPTY = new MetadataProvenance(-1L, -1, -1L);
+    public static final MetadataProvenance EMPTY = new MetadataProvenance(-1L, -1, -1L, false);
 
-    private final long offset;
-    private final int epoch;
+    private final long lastContainedOffset;
+    private final int lastContainedEpoch;
     private final long lastContainedLogTimeMs;
+    private final boolean isOffsetBatchAligned;
 
     public MetadataProvenance(
-        long offset,
-        int epoch,
-        long lastContainedLogTimeMs
+        long lastContainedOffset,
+        int lastContainedEpoch,
+        long lastContainedLogTimeMs,
+        boolean isOffsetBatchAligned
     ) {
-        this.offset = offset;
-        this.epoch = epoch;
+        this.lastContainedOffset = lastContainedOffset;
+        this.lastContainedEpoch = lastContainedEpoch;
         this.lastContainedLogTimeMs = lastContainedLogTimeMs;
+        this.isOffsetBatchAligned = isOffsetBatchAligned;
     }
 
-    public OffsetAndEpoch offsetAndEpoch() {
-        return new OffsetAndEpoch(offset, epoch);
+    public OffsetAndEpoch snapshotId() {
+        return new OffsetAndEpoch(lastContainedOffset + 1, lastContainedEpoch);
     }
 
-    public long offset() {
-        return offset;
+    public long lastContainedOffset() {
+        return lastContainedOffset;
     }
 
-    public int epoch() {
-        return epoch;
+    public int lastContainedEpoch() {
+        return lastContainedEpoch;
     }
 
     public long lastContainedLogTimeMs() {
@@ -59,34 +63,44 @@ public final class MetadataProvenance {
     }
 
     /**
+     * Returns whether lastContainedOffset is the last offset in a record batch
+     */
+    public boolean isOffsetBatchAligned() {
+        return isOffsetBatchAligned;
+    }
+
+    /**
      * Returns the name that a snapshot with this provenance would have.
      */
     public String snapshotName() {
-        return String.format("snapshot %020d-%010d", offset, epoch);
+        return String.format("snapshot %s", Snapshots.filenameFromSnapshotId(snapshotId()));
     }
 
     @Override
     public boolean equals(Object o) {
         if (o == null || !o.getClass().equals(this.getClass())) return false;
         MetadataProvenance other = (MetadataProvenance) o;
-        return offset == other.offset &&
-            epoch == other.epoch &&
-            lastContainedLogTimeMs == other.lastContainedLogTimeMs;
+        return lastContainedOffset == other.lastContainedOffset &&
+            lastContainedEpoch == other.lastContainedEpoch &&
+            lastContainedLogTimeMs == other.lastContainedLogTimeMs &&
+            isOffsetBatchAligned == other.isOffsetBatchAligned;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(offset,
-            epoch,
-            lastContainedLogTimeMs);
+        return Objects.hash(lastContainedOffset,
+            lastContainedEpoch,
+            lastContainedLogTimeMs,
+            isOffsetBatchAligned);
     }
 
     @Override
     public String toString() {
         return "MetadataProvenance(" +
-            "offset=" + offset +
-            ", epoch=" + epoch +
+            "lastContainedOffset=" + lastContainedOffset +
+            ", lastContainedEpoch=" + lastContainedEpoch +
             ", lastContainedLogTimeMs=" + lastContainedLogTimeMs +
+            ", isOffsetBatchAligned=" + isOffsetBatchAligned +
             ")";
     }
 }
